@@ -1,0 +1,9 @@
+llama-index-core
+llama-index-llms-openai
+sentence-transformers
+elasticsearch==8.13.0
+redis
+fastapi
+uvicorn[standard]
+sse-starlette
+python-dotenv

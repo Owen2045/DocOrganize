@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh *)",
+      "Bash(scp *)"
+    ],
+    "additionalDirectories": [
+      "d:\\project\\claude_memory\\CiteFund"
+    ]
+  }
+}
