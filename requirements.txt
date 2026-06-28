@@ -1,5 +1,5 @@
-llama-index-core
-llama-index-llms-openai
+llama-index-core>=0.10.0,<0.11.0
+llama-index-llms-openai>=0.1.0,<0.2.0
 sentence-transformers
 elasticsearch==8.13.0
 redis
@@ -7,3 +7,4 @@ fastapi
 uvicorn[standard]
 sse-starlette
 python-dotenv
+python-multipart
