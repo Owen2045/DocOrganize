@@ -1,12 +1,14 @@
 """
-一次性腳本：把 docs/ 底下的法規 markdown 切塊、embedding、寫入 ES。
+一次性腳本：把 docs/ 底下的法規文件切塊、embedding、寫入 ES。
+支援格式：.pdf / .md / .txt
 用法：python scripts/ingest.py
 """
-import os, re, json
+import os, re
 from pathlib import Path
 from elasticsearch import Elasticsearch
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
+from pypdf import PdfReader
 
 load_dotenv()
 
@@ -17,7 +19,7 @@ DOCS_DIR = Path("docs")
 INDEX_MAPPING = {
     "mappings": {
         "properties": {
-            "content":   {"type": "text",       "analyzer": "ik_max_word"},
+            "content":   {"type": "text",       "analyzer": "standard"},
             "article":   {"type": "keyword"},
             "source":    {"type": "keyword"},
             "embedding": {"type": "dense_vector", "dims": 1024, "index": True, "similarity": "cosine"},
@@ -25,9 +27,15 @@ INDEX_MAPPING = {
     }
 }
 
+# 支援「第 2-1 條」、「第 27-3 條」等複合條號
+ARTICLE_PATTERN = re.compile(r"(第\s*\d+(?:-\d+)?\s*條)")
+
+def read_pdf(path: Path) -> str:
+    reader = PdfReader(path)
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
+
 def chunk_by_article(text: str, source: str) -> list[dict]:
-    """依「第X條」切塊，保留條號。"""
-    parts = re.split(r"(第\s*\d+\s*條)", text)
+    parts = ARTICLE_PATTERN.split(text)
     chunks = []
     i = 1
     while i < len(parts) - 1:
@@ -38,6 +46,14 @@ def chunk_by_article(text: str, source: str) -> list[dict]:
         i += 2
     return chunks
 
+def iter_docs():
+    for path in [*DOCS_DIR.glob("*.pdf"), *DOCS_DIR.glob("*.md"), *DOCS_DIR.glob("*.txt")]:
+        if path.suffix == ".pdf":
+            text = read_pdf(path)
+        else:
+            text = path.read_text(encoding="utf-8")
+        yield path, text
+
 def main():
     es = Elasticsearch(ES_URL)
     model = SentenceTransformer("BAAI/bge-m3")
@@ -47,11 +63,10 @@ def main():
     es.indices.create(index=ES_INDEX, body=INDEX_MAPPING)
     print(f"Index {ES_INDEX} created.")
 
-    for md_file in DOCS_DIR.glob("*.md"):
-        text = md_file.read_text(encoding="utf-8")
-        chunks = chunk_by_article(text, md_file.stem)
+    for path, text in iter_docs():
+        chunks = chunk_by_article(text, path.stem)
         if not chunks:
-            print(f"  {md_file.name}: no articles found, skipping")
+            print(f"  {path.name}: no articles found, skipping")
             continue
 
         embeddings = model.encode([c["content"] for c in chunks], show_progress_bar=True)
@@ -59,7 +74,7 @@ def main():
             chunk["embedding"] = emb.tolist()
             es.index(index=ES_INDEX, document=chunk)
 
-        print(f"  {md_file.name}: {len(chunks)} chunks indexed")
+        print(f"  {path.name}: {len(chunks)} chunks indexed")
 
     es.indices.refresh(index=ES_INDEX)
     print("Done.")

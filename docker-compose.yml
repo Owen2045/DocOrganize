@@ -40,7 +40,10 @@ services:
       redis:
         condition: service_started
     volumes:
+      - ./app:/app/app
       - ./docs:/app/docs
+      - ./static:/app/static
+      - ./scripts:/app/scripts
       - /Users/owen/.cache/huggingface:/root/.cache/huggingface
 
 volumes:
