@@ -198,10 +198,15 @@
     return text.replace(/第\s*\d+\s*條(?:之\d+)?/g, m => `<mark>${m}</mark>`);
   }
 
+  function normalizeMd(text) {
+    // ponytail: LLM omits \n between list items; insert before "N. " not at line-start
+    return text.replace(/([^\n])(\s*)(\d+\.\s)/g, '$1\n$3');
+  }
+
   function addMsg(role, text = "") {
     const div = document.createElement("div");
     div.className = "msg " + role;
-    if (role === "assistant") div.innerHTML = highlightArticles(marked.parse(text));
+    if (role === "assistant") div.innerHTML = highlightArticles(marked.parse(normalizeMd(text)));
     else div.textContent = text;
     chat.appendChild(div);
     chat.scrollTop = chat.scrollHeight;
@@ -248,7 +253,7 @@
             const data = line.slice(6);
             if (event === "token") {
               full += data;
-              bubble.innerHTML = highlightArticles(marked.parse(full));
+              bubble.innerHTML = highlightArticles(marked.parse(normalizeMd(full)));
               chat.scrollTop = chat.scrollHeight;
             } else if (event === "error") {
               bubble.textContent = "錯誤：" + data;
