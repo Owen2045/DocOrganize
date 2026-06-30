@@ -1,85 +1,73 @@
 # CiteFund — 台灣金融法規 Q&A Agent
 
-針對證券投資信託及顧問相關法規的智能問答系統，支援對話記憶與串流輸出。
+針對證券投資信託及顧問相關法規的智能問答系統，支援對話記憶、串流輸出與動態 LLM 切換。
+
+> **Demo**：直接在對話框輸入問題即可使用，無需登入。
 
 ## 功能
 
-- **混合檢索**：Elasticsearch BM25 + kNN + RRF fusion，搭配 BGE reranker 精排
-- **語意嵌入**：BGE-M3 本地模型，無需外部 Embedding API
-- **對話記憶**：Redis 儲存每個 session 的歷史對話
-- **串流輸出**：SSE (Server-Sent Events) 即時回應
-- **文件上傳**：透過 UI 上傳 .md / .txt 法規文件
+- **混合檢索**：Elasticsearch BM25 + kNN + RRF fusion，兼顧關鍵字命中與語意相似
+- **HyDE**：先讓 LLM 生成假設條文再 embed，縮短白話問法與法規用詞的語意鴻溝
+- **語意嵌入**：BAAI/bge-m3 本地模型（1024 dim），無需外部 Embedding API
+- **對話記憶**：每個 session 儲存最近 6 輪歷史，支援多輪追問
+- **串流輸出**：SSE 即時逐 token 推送，回答邊生成邊顯示
+- **動態 LLM fallback**：主 LLM 額度耗盡時自動切換備援，保持服務可用
 
 ## 技術棧
 
 | 層 | 技術 |
 |----|------|
-| LLM | OpenAI GPT-4o |
-| Agent | LlamaIndex FunctionCallingAgent |
-| Embedding | BAAI/bge-m3（本地） |
-| Reranker | BAAI/bge-reranker-v2-m3（本地） |
-| 向量庫 | Elasticsearch 8.13（hybrid retrieval） |
-| 記憶 | Redis 7 |
+| LLM | OpenAI gpt-4o-mini（+ Gemini 備援）|
+| Agent | OpenAI Function Calling（原生，非框架）|
+| Embedding | BAAI/bge-m3（本地，1024 dim）|
+| 向量 / 全文 DB | Elasticsearch 8.x（BM25 + kNN + RRF）|
+| 對話記憶 | Redis 7 |
 | API | FastAPI + sse-starlette |
+| 前端 | 純 HTML/CSS/JS + marked.js |
 | 部署 | Docker Compose |
 
-## 快速開始
+## 系統架構
 
-### 1. 設定環境變數
-
-```bash
-cp .env.example .env
-# 填入 OPENAI_API_KEY
 ```
+瀏覽器
+  │  POST /chat/stream（SSE）
+  ▼
+FastAPI
+  ├── Redis — 對話歷史（最近 6 輪）
+  └── OpenAI Function Calling（stream=True）
+        第一輪：LLM 決定是否呼叫 search_knowledge_base
+        finish_reason == "tool_calls" → retriever.py → ES
+        第二輪：LLM stream 最終回答 → SSE token by token
 
-### 2. 啟動服務
-
-```bash
-docker compose up -d --build
+retriever.py
+  ├── HyDE：query → LLM → 假設條文 → BGE-M3 embed
+  ├── BM25（match query，原始 query）
+  ├── kNN（cosine，假設條文 embed）
+  └── RRF merge → top 5 chunks
 ```
-
-### 3. 放入法規文件
-
-將 `.md` 或 `.txt` 格式的法規文件放到 `docs/` 目錄，或透過 UI 上傳。
-
-### 4. 建立索引
-
-```bash
-docker compose exec app python scripts/ingest.py
-```
-
-### 5. 開啟 UI
-
-瀏覽器打開 `http://localhost:8000`
 
 ## 專案結構
 
 ```
 CiteFund/
 ├── app/
-│   ├── main.py        # FastAPI 入口，/chat/stream, /upload
-│   ├── agent.py       # LlamaIndex FunctionCallingAgent
-│   ├── retriever.py   # ES hybrid retrieval + reranker
+│   ├── main.py        # FastAPI 入口
+│   ├── ingest.py      # 文件切塊、embedding、寫入 ES
+│   ├── retriever.py   # HyDE + hybrid retrieval（BM25+kNN+RRF）
 │   ├── memory.py      # Redis 對話記憶
-│   ├── tools.py       # Agent FunctionTool
 │   └── config.py      # 環境變數
 ├── static/
 │   └── index.html     # 聊天 UI
 ├── scripts/
-│   ├── ingest.py      # 文件切分 + 向量化 + 寫入 ES
-│   ├── test_retrieval.py
-│   └── deploy.sh      # rsync + restart
-├── docs/              # 法規文件（不上 git）
+│   └── ingest.py      # CLI 批次 ingest
 ├── docker-compose.yml
 ├── Dockerfile
 └── requirements.txt
 ```
 
-## 環境變數
+## 設計決策
 
-| 變數 | 說明 | 預設值 |
-|------|------|--------|
-| `OPENAI_API_KEY` | OpenAI API 金鑰 | 必填 |
-| `ES_URL` | Elasticsearch URL | `http://elasticsearch:9200` |
-| `ES_INDEX` | ES 索引名稱 | `citefund_laws` |
-| `REDIS_URL` | Redis URL | `redis://redis:6379` |
+- **原生 Function Calling 取代框架**：直接使用 OpenAI SDK 的 tool use 流程，保留對 streaming、tool 執行順序的完整控制
+- **HyDE**：kNN 用假設條文 embed，BM25 仍用原始 query，兩者 RRF 合併，兼顧召回率與精準度
+- **手動 RRF**：ES basic license 不支援內建 RRF pipeline，以 Python 實作兩次查詢 + reciprocal rank fusion
+- **本地 Embedding**：bge-m3 在本機推理，避免每次查詢呼叫外部 API 產生延遲與費用
