@@ -1,9 +1,29 @@
 import time
 from elasticsearch import Elasticsearch
 from sentence_transformers import SentenceTransformer
-from app.config import ES_URL, ES_INDEX
+from openai import OpenAI as _OAI
+from app.config import ES_URL, ES_INDEX, OPENAI_API_KEY
 
 _embed_model = None
+_oai: _OAI | None = None
+
+def _get_oai() -> _OAI:
+    global _oai
+    if _oai is None:
+        _oai = _OAI(api_key=OPENAI_API_KEY)
+    return _oai
+
+def _hyde_query(query: str) -> str:
+    try:
+        r = _get_oai().chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content":
+                f"請用台灣金融法規的條文語氣，寫一段回答以下問題的法規內容（50字內），不需要條號：{query}"}],
+            max_tokens=200,
+        )
+        return r.choices[0].message.content or query
+    except Exception:
+        return query  # ponytail: fallback if OpenAI quota/error
 
 def get_embed_model():
     global _embed_model
@@ -22,8 +42,10 @@ def search(query: str, top_k: int = 5) -> list[dict]:
     es = Elasticsearch(ES_URL)
 
     t0 = time.time()
-    vector = get_embed_model().encode(query).tolist()
-    print(f"[retriever] embed: {time.time()-t0:.2f}s", flush=True)
+    hyde = _hyde_query(query)
+    print(f"[retriever] hyde: {hyde[:60]!r}", flush=True)
+    vector = get_embed_model().encode(hyde).tolist()
+    print(f"[retriever] hyde+embed: {time.time()-t0:.2f}s", flush=True)
 
     fetch = top_k * 3
     t1 = time.time()

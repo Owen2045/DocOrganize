@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>金融法規問答助理</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚖️</text></svg>">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -119,7 +120,7 @@
 
   #send:disabled { background: #9ca3af; cursor: not-allowed; }
 
-  #upload-toggle {
+  #upload-toggle, #docs-toggle {
     background: rgba(255,255,255,0.15);
     border: none;
     color: white;
@@ -128,7 +129,7 @@
     font-size: 0.85rem;
     cursor: pointer;
   }
-  #upload-toggle:hover { background: rgba(255,255,255,0.25); }
+  #upload-toggle:hover, #docs-toggle:hover { background: rgba(255,255,255,0.25); }
 
   #upload-panel {
     background: white;
@@ -167,11 +168,28 @@
   <div style="display:flex;gap:12px;align-items:center">
     <span id="session-badge"></span>
     <button id="upload-toggle">上傳文件</button>
+    <button id="docs-toggle">已索引文件</button>
   </div>
 </header>
 
+<div id="docs-panel" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center">
+  <div style="background:white;border-radius:10px;padding:24px;min-width:320px;max-width:480px;width:90%;max-height:70vh;overflow-y:auto;position:relative">
+    <h2 style="font-size:1rem;margin-bottom:14px;color:#1a56db">已索引文件</h2>
+    <div id="docs-list" style="font-size:0.9rem;color:#374151"></div>
+    <button id="docs-close" style="margin-top:16px;background:#e5e7eb;border:none;border-radius:6px;padding:6px 14px;cursor:pointer">關閉</button>
+  </div>
+</div>
+
 <div id="upload-panel">
-  <input id="file-input" type="file" accept=".md,.txt" multiple>
+  <input id="file-input" type="file" accept=".pdf,.md,.txt" multiple>
+  <div style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+    <label style="font-size:0.85rem">分類：</label>
+    <input id="category-input" list="category-list" placeholder="選擇或輸入分類" style="width:160px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;font-size:0.85rem">
+    <datalist id="category-list"></datalist>
+  </div>
+  <label style="font-size:0.85rem;display:flex;align-items:center;gap:5px;white-space:nowrap;cursor:pointer">
+    <input type="checkbox" id="overwrite-check"> 覆蓋並重建
+  </label>
   <button id="upload-btn">上傳</button>
   <span id="upload-status"></span>
 </div>
@@ -199,8 +217,9 @@
   }
 
   function normalizeMd(text) {
-    // ponytail: LLM omits \n between list items; insert before "N. " not at line-start
-    return text.replace(/([^\n])(\s*)(\d+\.\s)/g, '$1\n$3');
+    return text
+      .replace(/([^\n])(#{1,3} )/g, '$1\n\n$2')   // ponytail: heading mid-line → newline
+      .replace(/([^\n])(\s*)(\d+\.\s)/g, '$1\n$3'); // numbered list mid-line
   }
 
   function addMsg(role, text = "") {
@@ -277,7 +296,17 @@
   const uploadBtn    = document.getElementById("upload-btn");
   const uploadStatus = document.getElementById("upload-status");
 
-  uploadToggle.addEventListener("click", () => uploadPanel.classList.toggle("open"));
+  const categoryInput = document.getElementById("category-input");
+  const categoryList  = document.getElementById("category-list");
+
+  uploadToggle.addEventListener("click", async () => {
+    uploadPanel.classList.toggle("open");
+    if (uploadPanel.classList.contains("open")) {
+      const r = await fetch("/categories");
+      const j = await r.json();
+      categoryList.innerHTML = j.categories.map(c => `<option value="${c}">`).join("");
+    }
+  });
 
   uploadBtn.addEventListener("click", async () => {
     if (!fileInput.files.length) return;
@@ -287,23 +316,64 @@
 
     const fd = new FormData();
     for (const f of fileInput.files) fd.append("files", f);
+    fd.append("overwrite", document.getElementById("overwrite-check").checked ? "true" : "false");
+    fd.append("category", categoryInput.value.trim());
 
     try {
       const r = await fetch("/upload", { method: "POST", body: fd });
       const j = await r.json();
       const parts = [];
-      if (j.uploaded.length)  parts.push(`已上傳：${j.uploaded.join(", ")}`);
-      if (j.skipped.length)   parts.push(`已存在（略過）：${j.skipped.join(", ")}`);
-      if (j.rejected.length)  parts.push(`拒絕：${j.rejected.join(", ")}`);
-      uploadStatus.className = j.uploaded.length ? "ok" : "err";
+      if (j.uploaded.length)    parts.push(`已上傳：${j.uploaded.join(", ")}`);
+      if (j.reindexing.length)  parts.push(`重建索引中：${j.reindexing.join(", ")}`);
+      if (j.skipped.length)     parts.push(`已存在（略過）：${j.skipped.join(", ")}`);
+      if (j.rejected.length)    parts.push(`拒絕：${j.rejected.join(", ")}`);
+      const pending = [...j.uploaded, ...j.reindexing].map(f => f.replace(/\.[^.]+$/, ""));
+      uploadStatus.className = (j.uploaded.length || j.reindexing.length) ? "ok" : "err";
       uploadStatus.textContent = parts.join("　");
       fileInput.value = "";
+
+      if (pending.length) {
+        uploadStatus.textContent += "　（索引建立中…）";
+        const done = new Set();
+        const timer = setInterval(async () => {
+          for (const src of pending) {
+            if (done.has(src)) continue;
+            const res = await fetch(`/ingest-status?source=${encodeURIComponent(src)}`);
+            const s = await res.json();
+            if (s.done) done.add(src);
+          }
+          if (done.size === pending.length) {
+            clearInterval(timer);
+            uploadStatus.textContent = uploadStatus.textContent.replace("（索引建立中…）", "✅ 索引完成");
+          }
+        }, 10000);
+      }
     } catch {
       uploadStatus.className = "err";
       uploadStatus.textContent = "上傳失敗";
     }
     uploadBtn.disabled = false;
   });
+
+  // indexed docs panel
+  const docsPanel  = document.getElementById("docs-panel");
+  const docsList   = document.getElementById("docs-list");
+  document.getElementById("docs-toggle").addEventListener("click", async () => {
+    docsList.textContent = "載入中…";
+    docsPanel.style.display = "flex";
+    const r = await fetch("/indexed-docs");
+    const j = await r.json();
+    if (!j.docs.length) { docsList.textContent = "尚無已索引文件。"; return; }
+    docsList.innerHTML = j.docs.map(d =>
+      `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f3f4f6;gap:8px">
+         <span style="flex:1">${d.source}</span>
+         <span style="color:#1a56db;font-size:0.8rem">${d.category}</span>
+         <span style="color:#6b7280;white-space:nowrap">${d.chunks} chunks</span>
+       </div>`
+    ).join("");
+  });
+  document.getElementById("docs-close").addEventListener("click", () => docsPanel.style.display = "none");
+  docsPanel.addEventListener("click", e => { if (e.target === docsPanel) docsPanel.style.display = "none"; });
 
   sendBtn.addEventListener("click", send);
 

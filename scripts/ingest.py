@@ -22,6 +22,7 @@ INDEX_MAPPING = {
             "content":   {"type": "text",       "analyzer": "standard"},
             "article":   {"type": "keyword"},
             "source":    {"type": "keyword"},
+            "category":  {"type": "keyword"},
             "embedding": {"type": "dense_vector", "dims": 1024, "index": True, "similarity": "cosine"},
         }
     }
@@ -54,16 +55,23 @@ def iter_docs():
             text = path.read_text(encoding="utf-8")
         yield path, text
 
+def _already_indexed(es: Elasticsearch, source: str) -> bool:
+    r = es.count(index=ES_INDEX, body={"query": {"term": {"source": source}}})
+    return r["count"] > 0
+
 def main():
     es = Elasticsearch(ES_URL)
     model = SentenceTransformer("BAAI/bge-m3")
 
-    if es.indices.exists(index=ES_INDEX):
-        es.indices.delete(index=ES_INDEX)
-    es.indices.create(index=ES_INDEX, body=INDEX_MAPPING)
-    print(f"Index {ES_INDEX} created.")
+    if not es.indices.exists(index=ES_INDEX):
+        es.indices.create(index=ES_INDEX, body=INDEX_MAPPING)
+        print(f"Index {ES_INDEX} created.")
 
     for path, text in iter_docs():
+        if _already_indexed(es, path.stem):
+            print(f"  {path.name}: already indexed, skipping")
+            continue
+
         chunks = chunk_by_article(text, path.stem)
         if not chunks:
             print(f"  {path.name}: no articles found, skipping")
