@@ -4,3 +4,4 @@ __pycache__/
 docs/
 .claude/
 .mypy_cache
+CLAUDE.md
