@@ -15,20 +15,33 @@ import json
 
 _ENV_FILE = Path(".env")
 
+
 def _get_llm_clients() -> list[tuple[_OAI, str]]:
+    """依 .env 的 LLM_PROVIDERS 順序回傳 [(client, model_name), ...]，供 fallback 迴圈使用。"""
     env = dotenv_values(_ENV_FILE) if _ENV_FILE.exists() else {}
     providers = [p.strip() for p in (env.get("LLM_PROVIDERS") or "openai").split(",")]
     result = []
     for p in providers:
         if p == "openai":
-            result.append((_OAI(api_key=env.get("OPENAI_API_KEY") or OPENAI_API_KEY),
-                           env.get("OPENAI_MODEL") or "gpt-4o-mini"))
+            result.append(
+                (
+                    _OAI(api_key=env.get("OPENAI_API_KEY") or OPENAI_API_KEY),
+                    env.get("OPENAI_MODEL") or "gpt-4o-mini",
+                )
+            )
         elif p == "gemini" and env.get("GEMINI_API_KEY"):
-            result.append((_OAI(
-                api_key=env.get("GEMINI_API_KEY"),
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            ), env.get("GEMINI_MODEL") or "gemini-2.5-flash"))
+            result.append(
+                (
+                    _OAI(
+                        api_key=env.get("GEMINI_API_KEY"),
+                        # Gemini 提供相容 OpenAI 的端點，直接用 openai SDK 即可
+                        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                    ),
+                    env.get("GEMINI_MODEL") or "gemini-2.5-flash",
+                )
+            )
     return result or [(_OAI(api_key=OPENAI_API_KEY), "gpt-4o-mini")]
+
 
 SYSTEM_PROMPT = """你是一位專業的台灣金融法規助理，專門回答證券投資信託相關法規問題。
 
@@ -52,13 +65,12 @@ _SEARCH_TOOL = {
         "description": "搜尋金融法規知識庫，回傳相關條文內容與條號。",
         "parameters": {
             "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "搜尋查詢字串"}
-            },
+            "properties": {"query": {"type": "string", "description": "搜尋查詢字串"}},
             "required": ["query"],
         },
     },
 }
+
 
 def _run_search(query: str) -> str:
     results = search(query)
@@ -66,106 +78,158 @@ def _run_search(query: str) -> str:
         return "查無相關法規條文。"
     return "\n\n".join(f"【{r['article']}】{r['content']}" for r in results)
 
+
+def _build_messages(history: list, message: str) -> list:
+    """組裝送給 LLM 的 messages list：system prompt + 最近 6 輪歷史 + 本輪問題。"""
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # 只取最近 6 輪，避免 context 過長
+    for t in history[-6:]:
+        msgs.append({"role": t["role"], "content": t["content"]})
+    msgs.append({"role": "user", "content": message})
+    return msgs
+
+
+def _drain_stream(
+    stream, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop
+) -> tuple[dict, str | None]:
+    """消耗一個 streaming response：content token 推入 queue，tool_call delta 拼接後回傳。"""
+    tool_calls: dict = {}
+    finish_reason = None
+    for chunk in stream:
+        choice = chunk.choices[0]
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+        delta = choice.delta
+        if delta.content:
+            # call_soon_threadsafe：此函式在 sync thread 執行，必須透過此方法安全地寫入 async queue
+            loop.call_soon_threadsafe(queue.put_nowait, delta.content)
+        if delta.tool_calls:
+            for tc in delta.tool_calls:
+                i = tc.index
+                if i not in tool_calls:
+                    tool_calls[i] = {"id": "", "name": "", "arguments": ""}
+                # tool_call 的各欄位以 delta 方式分批送達，需逐片拼接
+                if tc.id:
+                    tool_calls[i]["id"] += tc.id
+                if tc.function and tc.function.name:
+                    tool_calls[i]["name"] += tc.function.name
+                if tc.function and tc.function.arguments:
+                    tool_calls[i]["arguments"] += tc.function.arguments
+    return tool_calls, finish_reason
+
+
+def _execute_tool_calls(tool_calls: dict) -> tuple[list, list]:
+    """執行所有 tool call，回傳 (assistant_tool_calls, tool_result_msgs)，用於組第二輪 messages。"""
+    assistant_tool_calls, tool_result_msgs = [], []
+    for tc in tool_calls.values():
+        args = json.loads(tc["arguments"])
+        result = _run_search(args["query"])
+        assistant_tool_calls.append(
+            {
+                "id": tc["id"],
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": tc["arguments"]},
+            }
+        )
+        tool_result_msgs.append(
+            {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": result,
+            }
+        )
+    return assistant_tool_calls, tool_result_msgs
+
+
+def _run_agent_thread(
+    messages: list,
+    queue: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+    thread_exc: list,
+) -> None:
+    """在 sync thread 執行 LLM agent 迴圈；token 推入 queue，結束時送 None 作為結束訊號。
+
+    第一輪 stream：LLM 決定是否呼叫工具
+    第二輪 stream（僅 tool_calls 時）：帶入工具結果，LLM 生成最終回答
+    RateLimitError 時自動切換下一個 provider。
+    """
+    try:
+        clients = _get_llm_clients()
+        last_exc: Exception | None = None
+        for oai, model in clients:
+            try:
+                stream1 = oai.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=[_SEARCH_TOOL],
+                    stream=True,
+                )
+                tool_calls, finish_reason = _drain_stream(stream1, queue, loop)
+
+                if finish_reason == "tool_calls":
+                    assistant_tool_calls, tool_result_msgs = _execute_tool_calls(
+                        tool_calls
+                    )
+                    updated = (
+                        messages
+                        + [{"role": "assistant", "tool_calls": assistant_tool_calls}]
+                        + tool_result_msgs
+                    )
+                    stream2 = oai.chat.completions.create(
+                        model=model, messages=updated, stream=True
+                    )
+                    _drain_stream(stream2, queue, loop)
+                return
+            except _RateLimitError as e:
+                last_exc = e
+                # 嘗試下一個 provider
+                continue
+        if last_exc:
+            raise last_exc
+    except Exception as e:
+        thread_exc.append(e)
+    finally:
+        # 無論成功或失敗都送 None，通知 async 端停止等待
+        loop.call_soon_threadsafe(queue.put_nowait, None)
+
+
 DOCS_DIR = Path("docs")
 DOCS_DIR.mkdir(exist_ok=True)
 
 _ingesting: set[str] = set()
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 啟動時預載 BGE-M3 embedding model，避免第一次請求時 cold start 延遲
     await asyncio.to_thread(get_embed_model)
     yield
 
+
 app = FastAPI(lifespan=lifespan)
+
 
 class ChatRequest(BaseModel):
     session_id: str
     message: str
 
+
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     history = get_history(req.session_id)
     append_turn(req.session_id, "user", req.message)
+    messages = _build_messages(history, req.message)
 
     async def event_generator():
         try:
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-            for t in history[-6:]:
-                messages.append({"role": t["role"], "content": t["content"]})
-            messages.append({"role": "user", "content": req.message})
-
             loop = asyncio.get_event_loop()
             queue: asyncio.Queue = asyncio.Queue()
-            thread_exc = []
+            thread_exc: list = []
 
-            def _run_agent():
-                try:
-                    clients = _get_llm_clients()
-                    last_exc: Exception | None = None
-                    for oai, model in clients:
-                        try:
-                            tool_calls: dict = {}
-                            finish_reason = None
-                            stream1 = oai.chat.completions.create(
-                                model=model, messages=messages,
-                                tools=[_SEARCH_TOOL], stream=True,
-                            )
-                            for chunk in stream1:
-                                choice = chunk.choices[0]
-                                if choice.finish_reason:
-                                    finish_reason = choice.finish_reason
-                                delta = choice.delta
-                                if delta.content:
-                                    loop.call_soon_threadsafe(queue.put_nowait, delta.content)
-                                if delta.tool_calls:
-                                    for tc in delta.tool_calls:
-                                        i = tc.index
-                                        if i not in tool_calls:
-                                            tool_calls[i] = {"id": "", "name": "", "arguments": ""}
-                                        if tc.id:
-                                            tool_calls[i]["id"] += tc.id
-                                        if tc.function and tc.function.name:
-                                            tool_calls[i]["name"] += tc.function.name
-                                        if tc.function and tc.function.arguments:
-                                            tool_calls[i]["arguments"] += tc.function.arguments
-
-                            if finish_reason == "tool_calls":
-                                assistant_tool_calls = []
-                                tool_result_msgs = []
-                                for tc in tool_calls.values():
-                                    args = json.loads(tc["arguments"])
-                                    result = _run_search(args["query"])
-                                    assistant_tool_calls.append({
-                                        "id": tc["id"], "type": "function",
-                                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                                    })
-                                    tool_result_msgs.append({
-                                        "role": "tool",
-                                        "tool_call_id": tc["id"],
-                                        "content": result,
-                                    })
-                                updated = messages + [
-                                    {"role": "assistant", "tool_calls": assistant_tool_calls}
-                                ] + tool_result_msgs
-                                stream2 = oai.chat.completions.create(
-                                    model=model, messages=updated, stream=True,
-                                )
-                                for chunk in stream2:
-                                    token = chunk.choices[0].delta.content or ""
-                                    if token:
-                                        loop.call_soon_threadsafe(queue.put_nowait, token)
-                            return  # success
-                        except _RateLimitError as e:
-                            last_exc = e
-                            continue  # try next provider
-                    if last_exc:
-                        raise last_exc
-                except Exception as e:
-                    thread_exc.append(e)
-                finally:
-                    loop.call_soon_threadsafe(queue.put_nowait, None)
-
-            future = loop.run_in_executor(None, _run_agent)
+            # run_in_executor：將 sync 函式丟到 thread pool，不阻塞 async event loop
+            future = loop.run_in_executor(
+                None, _run_agent_thread, messages, queue, loop, thread_exc
+            )
 
             answer = ""
             while True:
@@ -180,19 +244,26 @@ async def chat_stream(req: ChatRequest):
                 raise thread_exc[0]
 
             append_turn(req.session_id, "assistant", answer)
-            yield {"event": "final_answer", "data": json.dumps({"answer": answer}, ensure_ascii=False)}
+            yield {
+                "event": "final_answer",
+                "data": json.dumps({"answer": answer}, ensure_ascii=False),
+            }
         except Exception:
             import logging, traceback
+
             logging.error(traceback.format_exc())
             yield {"event": "error", "data": "系統發生錯誤，請稍後再試。"}
 
     return EventSourceResponse(event_generator())
 
+
 ALLOWED_EXTENSIONS = {".pdf", ".md", ".txt"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
+
 def _safe_filename(name: str) -> str:
     return Path(name).name
+
 
 def _valid_content(name: str, data: bytes) -> bool:
     ext = Path(name).suffix.lower()
@@ -201,6 +272,7 @@ def _valid_content(name: str, data: bytes) -> bool:
     if ext == ".pdf" and not data.startswith(b"%PDF"):
         return False
     return True
+
 
 @app.post("/upload")
 async def upload(
@@ -230,26 +302,39 @@ async def upload(
             saved.append(filename)
         dest.write_bytes(data)
         _ingesting.add(dest.stem)
+
+        # 用預設參數捕捉當前值，避免 closure 共享迴圈變數
         async def _bg(p=dest, cat=category):
             await asyncio.to_thread(ingest_file, p, cat)
             _ingesting.discard(p.stem)
+
         background_tasks.add_task(_bg)
-    return {"uploaded": saved, "skipped": skipped, "rejected": rejected, "reindexing": reindexing}
+    return {
+        "uploaded": saved,
+        "skipped": skipped,
+        "rejected": rejected,
+        "reindexing": reindexing,
+    }
+
 
 @app.get("/ingest-status")
 def ingest_status(source: str):
     return {"done": source not in _ingesting}
 
+
 @app.get("/indexed-docs")
 def list_docs():
     return {"docs": list_indexed_docs()}
+
 
 @app.get("/categories")
 def get_categories():
     return {"categories": list_categories()}
 
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
