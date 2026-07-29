@@ -143,15 +143,18 @@ def run_chat_thread(
     queue: asyncio.Queue,
     loop: asyncio.AbstractEventLoop,
     thread_exc: list,
+    clients: list[tuple[_OAI, str]] | None = None,
 ) -> None:
     """在 sync thread 執行 LLM agent 迴圈；token 推入 queue，結束時送 None 作為結束訊號。
 
     第一輪 stream：LLM 決定是否呼叫工具
     第二輪 stream（僅 tool_calls 時）：帶入工具結果，LLM 生成最終回答
     RateLimitError 時自動切換下一個 provider。
+
+    clients 預設 None 時才呼叫 _get_llm_clients()；測試可自行注入假 client。
     """
     try:
-        clients = _get_llm_clients()
+        clients = clients if clients is not None else _get_llm_clients()
         last_exc: Exception | None = None
         for oai, model in clients:
             try:
