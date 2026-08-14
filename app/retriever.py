@@ -71,15 +71,18 @@ def _rewrite_queries(query: str) -> list[str]:
 
 
 def search_fusion(query: str, top_k: int = 5) -> list[dict]:
-    """Multi-Query RAG-Fusion：GPT 改寫 3 個 query，批次 embed，各自 BM25+kNN，最終 RRF 合併回傳 top_k。"""
+    """Multi-Query RAG-Fusion + HyDE：GPT 改寫 3 個 query，各自生成假設條文，
+    批次 embed 假設條文做 kNN、原始改寫 query 做 BM25，各自 RRF 後再做一次跨 query RRF，回傳 top_k。"""
     es = Elasticsearch(ES_URL)
 
     t0 = time.time()
     rewrites = _rewrite_queries(query)
     print(f"[retriever] rewrites: {rewrites}", flush=True)
-    # 批次 encode 所有改寫 query，比逐一呼叫快約 2-3 倍
-    vectors = get_embed_model().encode(rewrites)
-    print(f"[retriever] rewrite+embed: {time.time()-t0:.2f}s", flush=True)
+    # HyDE：每個改寫 query 各生成一段假設條文，用其 embedding 代替原始 query 做 kNN
+    hydes = [_hyde_query(r) for r in rewrites]
+    # 批次 encode 所有假設條文，比逐一呼叫快約 2-3 倍
+    vectors = get_embed_model().encode(hydes)
+    print(f"[retriever] rewrite+hyde+embed: {time.time()-t0:.2f}s", flush=True)
 
     fetch = top_k * 3
     all_ranked: list[list[str]] = []
@@ -112,54 +115,4 @@ def search_fusion(query: str, top_k: int = 5) -> list[dict]:
         if i in docs
     ]
     # ponytail: reranker skipped — RRF already good enough
-    return hits[:top_k]
-
-
-def search(query: str, top_k: int = 5) -> list[dict]:
-    """混合檢索：HyDE embed 做 kNN + 原始 query 做 BM25，兩路結果 RRF 合併後回傳 top_k chunks。"""
-    es = Elasticsearch(ES_URL)
-
-    t0 = time.time()
-    hyde = _hyde_query(query)
-    print(f"[retriever] hyde: {hyde[:60]!r}", flush=True)
-    # kNN 用假設條文的 embedding，BM25 仍用原始 query，兩者互補
-    vector = get_embed_model().encode(hyde).tolist()
-    print(f"[retriever] hyde+embed: {time.time()-t0:.2f}s", flush=True)
-
-    # 各路多取 top_k*3，RRF 後再截 top_k，避免截斷有潛力的結果
-    fetch = top_k * 3
-    t1 = time.time()
-    bm25_resp = es.search(
-        index=ES_INDEX,
-        body={"size": fetch, "query": {"match": {"content": {"query": query}}}},
-    )
-    knn_resp = es.search(
-        index=ES_INDEX,
-        body={
-            "size": fetch,
-            "knn": {
-                "field": "embedding",
-                "query_vector": vector,
-                "k": fetch,
-                "num_candidates": 100,
-            },
-        },
-    )
-    print(f"[retriever] es search: {time.time()-t1:.2f}s", flush=True)
-
-    docs = {
-        h["_id"]: h["_source"]
-        for h in bm25_resp["hits"]["hits"] + knn_resp["hits"]["hits"]
-    }
-    bm25_ids = [h["_id"] for h in bm25_resp["hits"]["hits"]]
-    knn_ids = [h["_id"] for h in knn_resp["hits"]["hits"]]
-    merged_ids = _rrf_merge([bm25_ids, knn_ids])
-
-    hits = [
-        {"content": docs[i]["content"], "article": docs[i].get("article", "")}
-        for i in merged_ids
-        if i in docs
-    ]
-
-    # ponytail: reranker skipped — bge-reranker-v2-m3 takes 60s on CPU; RRF already good enough
     return hits[:top_k]
