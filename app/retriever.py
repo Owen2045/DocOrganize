@@ -70,9 +70,11 @@ def _rewrite_queries(query: str) -> list[str]:
         return [query]
 
 
-def search_fusion(query: str, top_k: int = 5) -> list[dict]:
+def search_fusion(query: str, top_k: int = 5, source: str | None = None) -> list[dict]:
     """Multi-Query RAG-Fusion + HyDE：GPT 改寫 3 個 query，各自生成假設條文，
-    批次 embed 假設條文做 kNN、原始改寫 query 做 BM25，各自 RRF 後再做一次跨 query RRF，回傳 top_k。"""
+    批次 embed 假設條文做 kNN、原始改寫 query 做 BM25，各自 RRF 後再做一次跨 query RRF，回傳 top_k。
+
+    source 給定時只搜尋該份文件（比較兩份文件時用來分別鎖定各自範圍）。"""
     es = Elasticsearch(ES_URL)
 
     t0 = time.time()
@@ -89,18 +91,19 @@ def search_fusion(query: str, top_k: int = 5) -> list[dict]:
     docs: dict = {}
 
     t1 = time.time()
+    source_filter = [{"term": {"source": source}}] if source else []
     for rewrite, vector in zip(rewrites, vectors):
         bm25_resp = es.search(
             index=ES_INDEX,
-            body={"size": fetch, "query": {"match": {"content": {"query": rewrite}}}},
-        )
-        knn_resp = es.search(
-            index=ES_INDEX,
             body={
                 "size": fetch,
-                "knn": {"field": "embedding", "query_vector": vector.tolist(), "k": fetch, "num_candidates": 100},
+                "query": {"bool": {"must": {"match": {"content": {"query": rewrite}}}, "filter": source_filter}},
             },
         )
+        knn_query = {"field": "embedding", "query_vector": vector.tolist(), "k": fetch, "num_candidates": 100}
+        if source:
+            knn_query["filter"] = {"term": {"source": source}}
+        knn_resp = es.search(index=ES_INDEX, body={"size": fetch, "knn": knn_query})
         docs.update({h["_id"]: h["_source"] for h in bm25_resp["hits"]["hits"] + knn_resp["hits"]["hits"]})
         bm25_ids = [h["_id"] for h in bm25_resp["hits"]["hits"]]
         knn_ids = [h["_id"] for h in knn_resp["hits"]["hits"]]

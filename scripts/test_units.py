@@ -8,9 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.ingest import chunk_by_article
+from app.ingest import chunk_by_article, chunk_generic
 from app.retriever import _rrf_merge
 from app.main import _safe_filename, _valid_content
+from app.judge import _pick_judge_client
 
 # chunk_by_article：按「第N條」regex 切塊
 chunks = chunk_by_article("第1條 內容一\n第2-1條 內容二", "test")
@@ -36,5 +37,25 @@ assert _valid_content("a.pdf", b"%PDF-1.4 rest") is True
 assert _valid_content("a.pdf", b"not a pdf") is False
 assert _valid_content("a.txt", b"hello") is True
 assert _valid_content("a.exe", b"MZ...") is False
+
+# chunk_generic：固定長度滑動視窗切塊（compare_documents 的大文件降級依賴它）
+chunks = chunk_generic("A" * 1500, "test", size=600, overlap=100)
+assert [c["article"] for c in chunks] == ["段落1", "段落2", "段落3"]
+assert all(c["source"] == "test" for c in chunks)
+assert chunk_generic("", "test") == []
+
+# _pick_judge_client：三種選擇情境
+# 1. 雙 provider，排除 primary，應選另一個且非同模型自我檢查
+client_a, client_b = object(), object()
+c, m, same = _pick_judge_client([(client_a, "model-a"), (client_b, "model-b")], exclude_model="model-a")
+assert (c, m, same) == (client_b, "model-b", False)
+
+# 2. 只有單一 provider：退化為同模型自我檢查
+c, m, same = _pick_judge_client([(client_a, "model-a")], exclude_model="model-a")
+assert (c, m, same) == (client_a, "model-a", True)
+
+# 3. 沒有 exclude_model 可排除（呼叫端理論上永遠會明確傳入，這裡只驗證保底行為）：直接取第一個
+c, m, same = _pick_judge_client([(client_a, "model-a"), (client_b, "model-b")], exclude_model=None)
+assert (c, m, same) == (client_a, "model-a", False)
 
 print("all unit checks passed")

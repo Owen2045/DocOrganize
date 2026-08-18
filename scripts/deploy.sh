@@ -3,7 +3,7 @@
 set -e
 
 REMOTE="owen@100.71.132.50"
-REMOTE_DIR="/Users/owen/citefund"
+REMOTE_DIR="/Users/owen/docorganize"
 
 echo "==> Syncing files..."
 rsync -av --exclude='.env' --exclude='__pycache__' --exclude='*.pyc' \

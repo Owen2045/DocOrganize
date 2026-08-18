@@ -1,8 +1,9 @@
 import re
+import time
 from pathlib import Path
 from elasticsearch import Elasticsearch
 from pypdf import PdfReader
-from app.config import ES_URL, ES_INDEX
+from app.config import ES_URL, ES_INDEX, DOCS_DIR
 from app.retriever import get_embed_model
 
 # 比對「第 N 條」或「第 N-M 條」格式，用於切塊分隔符
@@ -27,7 +28,7 @@ INDEX_MAPPING = {
 }
 
 
-def _read_file(path: Path) -> str:
+def read_file(path: Path) -> str:
     """讀取檔案內容：PDF 逐頁取文字，其餘直接讀 UTF-8。"""
     if path.suffix == ".pdf":
         return "\n".join(p.extract_text() or "" for p in PdfReader(path).pages)
@@ -51,6 +52,17 @@ def chunk_by_article(text: str, source: str) -> list[dict]:
                 }
             )
         i += 2
+    return chunks
+
+
+def chunk_generic(text: str, source: str, size: int = 600, overlap: int = 100) -> list[dict]:
+    """無條文結構的文件（如比較用的一般 PDF）：固定長度滑動視窗切塊，標記段落序號。"""
+    chunks = []
+    step = size - overlap
+    for idx, i in enumerate(range(0, len(text), step)):
+        content = text[i : i + size].strip()
+        if content:
+            chunks.append({"article": f"段落{idx + 1}", "content": content, "source": source})
     return chunks
 
 
@@ -116,9 +128,13 @@ def ingest_file(path: Path, category: str = "") -> int:
     # index 不存在時自動建立（含 mapping）
     if not es.indices.exists(index=ES_INDEX):
         es.indices.create(index=ES_INDEX, body=INDEX_MAPPING)
-    chunks = chunk_by_article(_read_file(path), path.stem)
+    text = read_file(path)
+    chunks = chunk_by_article(text, path.stem)
     if not chunks:
-        print(f"[ingest] {path.name}: no articles found", flush=True)
+        # 找不到「第N條」結構（如比較用的一般文件），退回固定長度切塊
+        chunks = chunk_generic(text, path.stem)
+    if not chunks:
+        print(f"[ingest] {path.name}: empty file", flush=True)
         return 0
     embeddings = get_embed_model().encode([c["content"] for c in chunks])
     for chunk, emb in zip(chunks, embeddings):
@@ -131,3 +147,33 @@ def ingest_file(path: Path, category: str = "") -> int:
     es.indices.refresh(index=ES_INDEX)
     print(f"[ingest] {path.name}: {len(chunks)} chunks done", flush=True)
     return len(chunks)
+
+
+_ingesting: set[str] = set()
+
+
+def mark_ingesting(source: str) -> None:
+    _ingesting.add(source)
+
+
+def mark_done(source: str) -> None:
+    _ingesting.discard(source)
+
+
+def is_ingesting(source: str) -> bool:
+    return source in _ingesting
+
+
+def sweep_orphaned_docs(max_age_hours: int = 48) -> int:
+    """啟動時清掉 docs/ 裡超過 max_age_hours、且從未被索引進 ES 的孤兒檔案
+    （例如 compare_documents 讀過但沒被 ingest_documents 歸檔的暫存檔），避免磁碟無限成長。"""
+    if not DOCS_DIR.exists():
+        return 0
+    indexed = {d["source"] for d in list_indexed_docs()}
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for p in DOCS_DIR.iterdir():
+        if p.is_file() and p.stem not in indexed and p.stat().st_mtime < cutoff:
+            p.unlink()
+            removed += 1
+    return removed

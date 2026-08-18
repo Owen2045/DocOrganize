@@ -1,7 +1,7 @@
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
-    container_name: citefund_es
+    container_name: docorganize_es
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -18,7 +18,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: citefund_redis
+    container_name: docorganize_redis
     ports:
       - "6379:6379"
     volumes:
@@ -26,7 +26,7 @@ services:
 
   app:
     build: .
-    container_name: citefund_app
+    container_name: docorganize_app
     ports:
       - "8000:8000"
     env_file:

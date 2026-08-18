@@ -8,17 +8,34 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
+  :root {
+    --bg: #0d0e12;
+    --surface: #15161c;
+    --glass-bg: rgba(255,255,255,0.06);
+    --glass-border: rgba(255,255,255,0.12);
+    --text: #e5e7eb;
+    --text-dim: #9ca3af;
+    --accent: #5b8cff;
+    --accent-contrast: #ffffff;
+    --danger: #f87171;
+  }
+
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: #f5f5f5;
+    background: var(--bg);
+    color: var(--text);
     height: 100vh;
     display: flex;
     flex-direction: column;
+    position: relative;
   }
 
   header {
-    background: #1a56db;
-    color: white;
+    background: var(--glass-bg);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--glass-border);
+    color: var(--text);
     padding: 14px 20px;
     display: flex;
     justify-content: space-between;
@@ -30,7 +47,7 @@
 
   #session-badge {
     font-size: 0.7rem;
-    opacity: 0.7;
+    opacity: 0.6;
     font-family: monospace;
   }
 
@@ -56,23 +73,24 @@
   .msg.assistant p:first-child { margin-top: 0; }
   .msg.assistant p:last-child { margin-bottom: 0; }
 
+  /* 聊天氣泡維持實色不透明：法規長文字可讀性優先，不套模糊 */
   .msg.user {
     align-self: flex-end;
-    background: #1a56db;
-    color: white;
+    background: var(--accent);
+    color: var(--accent-contrast);
     border-bottom-right-radius: 4px;
   }
 
   .msg.assistant {
     align-self: flex-start;
-    background: white;
-    border: 1px solid #e5e7eb;
+    background: var(--surface);
+    border: 1px solid #23252c;
     border-bottom-left-radius: 4px;
   }
 
   .msg mark {
-    background: #fef08a;
-    color: #713f12;
+    background: #fbbf24;
+    color: #1c1400;
     padding: 0 2px;
     border-radius: 3px;
   }
@@ -84,18 +102,83 @@
 
   @keyframes blink { 50% { opacity: 0; } }
 
+  #chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 20px;
+  }
+
+  #chips:not(:empty) { padding-top: 12px; }
+
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    padding: 5px 8px 5px 12px;
+    font-size: 0.82rem;
+    color: var(--text);
+  }
+
+  .chip-remove {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 3px 5px;
+    border-radius: 50%;
+  }
+
+  .chip-remove:hover { color: var(--danger); background: rgba(248,113,113,0.15); }
+
   #input-area {
-    background: white;
-    border-top: 1px solid #e5e7eb;
+    background: var(--glass-bg);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-top: 1px solid var(--glass-border);
     padding: 14px 20px;
     display: flex;
+    align-items: flex-end;
     gap: 10px;
     flex-shrink: 0;
   }
 
+  #category-input {
+    width: 140px;
+    border: 1px solid var(--glass-border);
+    background: rgba(255,255,255,0.04);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 10px;
+    font-size: 0.85rem;
+    outline: none;
+  }
+  #category-input:focus { border-color: var(--accent); }
+
+  #attach-btn {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--glass-border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 1rem;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #attach-btn:hover { background: rgba(255,255,255,0.1); }
+
   #input {
     flex: 1;
-    border: 1px solid #d1d5db;
+    border: 1px solid var(--glass-border);
+    background: rgba(255,255,255,0.04);
+    color: var(--text);
     border-radius: 8px;
     padding: 10px 14px;
     font-size: 0.95rem;
@@ -105,11 +188,12 @@
     max-height: 120px;
   }
 
-  #input:focus { border-color: #1a56db; }
+  #input::placeholder { color: var(--text-dim); }
+  #input:focus { border-color: var(--accent); }
 
   #send {
-    background: #1a56db;
-    color: white;
+    background: var(--accent);
+    color: var(--accent-contrast);
     border: none;
     border-radius: 8px;
     padding: 10px 18px;
@@ -118,47 +202,82 @@
     align-self: flex-end;
   }
 
-  #send:disabled { background: #9ca3af; cursor: not-allowed; }
+  #send:disabled { background: #4b5563; cursor: not-allowed; }
 
   #upload-toggle, #docs-toggle {
-    background: rgba(255,255,255,0.15);
-    border: none;
-    color: white;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid var(--glass-border);
+    color: var(--text);
     border-radius: 6px;
     padding: 6px 12px;
     font-size: 0.85rem;
     cursor: pointer;
   }
-  #upload-toggle:hover, #docs-toggle:hover { background: rgba(255,255,255,0.25); }
+  #upload-toggle:hover, #docs-toggle:hover { background: rgba(255,255,255,0.15); }
 
-  #upload-panel {
-    background: white;
-    border-bottom: 1px solid #e5e7eb;
-    padding: 14px 20px;
+  #upload-status {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    padding: 0 20px;
+  }
+  #upload-status.err { color: var(--danger); }
+
+  /* 玻璃感全頁拖放覆蓋層 */
+  #drop-overlay {
     display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(13,14,18,0.7);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 200;
     align-items: center;
-    gap: 12px;
-    flex-shrink: 0;
+    justify-content: center;
+    pointer-events: none;
   }
-  #upload-panel.open { display: flex; }
+  #drop-overlay.show { display: flex; }
+  #drop-overlay div {
+    border: 2px dashed var(--accent);
+    border-radius: 16px;
+    padding: 40px 60px;
+    font-size: 1.1rem;
+    color: var(--text);
+    background: var(--glass-bg);
+  }
 
-  #file-input { flex: 1; font-size: 0.9rem; }
-
-  #upload-btn {
-    background: #1a56db;
-    color: white;
-    border: none;
+  #docs-panel {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #docs-panel-card {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    padding: 24px;
+    min-width: 320px;
+    max-width: 480px;
+    width: 90%;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  #docs-panel-card h2 { font-size: 1rem; margin-bottom: 14px; color: var(--accent); }
+  #docs-list { font-size: 0.9rem; color: var(--text); }
+  #docs-close {
+    margin-top: 16px;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid var(--glass-border);
+    color: var(--text);
     border-radius: 6px;
-    padding: 7px 14px;
-    font-size: 0.9rem;
+    padding: 6px 14px;
     cursor: pointer;
-    white-space: nowrap;
   }
-  #upload-btn:disabled { background: #9ca3af; cursor: not-allowed; }
-
-  #upload-status { font-size: 0.85rem; color: #6b7280; white-space: nowrap; }
-  #upload-status.ok  { color: #16a34a; }
-  #upload-status.err { color: #dc2626; }
 </style>
 </head>
 <body>
@@ -172,33 +291,28 @@
   </div>
 </header>
 
-<div id="docs-panel" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:100;align-items:center;justify-content:center">
-  <div style="background:white;border-radius:10px;padding:24px;min-width:320px;max-width:480px;width:90%;max-height:70vh;overflow-y:auto;position:relative">
-    <h2 style="font-size:1rem;margin-bottom:14px;color:#1a56db">已索引文件</h2>
-    <div id="docs-list" style="font-size:0.9rem;color:#374151"></div>
-    <button id="docs-close" style="margin-top:16px;background:#e5e7eb;border:none;border-radius:6px;padding:6px 14px;cursor:pointer">關閉</button>
+<div id="docs-panel">
+  <div id="docs-panel-card">
+    <h2>已索引文件</h2>
+    <div id="docs-list"></div>
+    <button id="docs-close">關閉</button>
   </div>
 </div>
 
-<div id="upload-panel">
-  <input id="file-input" type="file" accept=".pdf,.md,.txt" multiple>
-  <div style="display:flex;align-items:center;gap:6px;white-space:nowrap">
-    <label style="font-size:0.85rem">分類：</label>
-    <input id="category-input" list="category-list" placeholder="選擇或輸入分類" style="width:160px;border:1px solid #d1d5db;border-radius:6px;padding:5px 8px;font-size:0.85rem">
-    <datalist id="category-list"></datalist>
-  </div>
-  <label style="font-size:0.85rem;display:flex;align-items:center;gap:5px;white-space:nowrap;cursor:pointer">
-    <input type="checkbox" id="overwrite-check"> 覆蓋並重建
-  </label>
-  <button id="upload-btn">上傳</button>
-  <span id="upload-status"></span>
-</div>
+<div id="drop-overlay"><div>放開以上傳文件</div></div>
 
 <div id="chat">
-  <div class="msg assistant">您好！我是金融法規問答助理，可以回答證券投資信託相關法規問題。請問有什麼需要協助的？</div>
+  <div class="msg assistant">您好！我是金融法規問答助理，可以回答證券投資信託相關法規問題。也可以拖曳文件到畫面上傳，再告訴我要歸檔還是比較。</div>
 </div>
 
+<div id="chips"></div>
+<div id="upload-status"></div>
+
 <div id="input-area">
+  <input id="file-input-hidden" type="file" accept=".pdf,.md,.txt" multiple style="display:none">
+  <button id="attach-btn" title="附加檔案">📎</button>
+  <input id="category-input" list="category-list" placeholder="分類（選填）">
+  <datalist id="category-list"></datalist>
   <textarea id="input" rows="1" placeholder="輸入問題，按 Enter 送出..."></textarea>
   <button id="send">送出</button>
 </div>
@@ -211,6 +325,16 @@
   const chat = document.getElementById("chat");
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
+  const chipsEl = document.getElementById("chips");
+  const uploadStatus = document.getElementById("upload-status");
+  const categoryInput = document.getElementById("category-input");
+  const categoryList = document.getElementById("category-list");
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
 
   function highlightArticles(text) {
     return text.replace(/第\s*\d+\s*條(?:之\d+)?/g, m => `<mark>${m}</mark>`);
@@ -287,77 +411,101 @@
     bubble.classList.remove("cursor");
     sendBtn.disabled = false;
     input.focus();
+    // 這輪對話可能透過 ingest_documents/compare_documents 動到 pending 清單，重新同步
+    refreshPending();
   }
 
-  // upload
-  const uploadToggle = document.getElementById("upload-toggle");
-  const uploadPanel  = document.getElementById("upload-panel");
-  const fileInput    = document.getElementById("file-input");
-  const uploadBtn    = document.getElementById("upload-btn");
-  const uploadStatus = document.getElementById("upload-status");
+  // ---- 暫存文件（chip）----
 
-  const categoryInput = document.getElementById("category-input");
-  const categoryList  = document.getElementById("category-list");
+  function renderChips(pending) {
+    chipsEl.innerHTML = pending.map(p => `
+      <span class="chip" data-filename="${escapeHtml(p.filename)}">
+        <span>${escapeHtml(p.filename)}${p.category ? ` · ${escapeHtml(p.category)}` : ""}</span>
+        <button class="chip-remove" title="移除">✕</button>
+      </span>`).join("");
+  }
 
-  uploadToggle.addEventListener("click", async () => {
-    uploadPanel.classList.toggle("open");
-    if (uploadPanel.classList.contains("open")) {
-      const r = await fetch("/categories");
-      const j = await r.json();
-      categoryList.innerHTML = j.categories.map(c => `<option value="${c}">`).join("");
-    }
+  async function refreshPending() {
+    const r = await fetch(`/pending?session_id=${sessionId}`);
+    const j = await r.json();
+    renderChips(j.pending);
+  }
+
+  chipsEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".chip-remove");
+    if (!btn) return;
+    const filename = btn.closest(".chip").dataset.filename;
+    await fetch(`/pending?session_id=${sessionId}&filename=${encodeURIComponent(filename)}`, { method: "DELETE" });
+    refreshPending();
   });
 
-  uploadBtn.addEventListener("click", async () => {
-    if (!fileInput.files.length) return;
-    uploadBtn.disabled = true;
-    uploadStatus.className = "";
-    uploadStatus.textContent = "上傳中...";
+  // ---- 上傳（點擊 / 拖放共用）----
 
+  async function uploadFiles(fileList) {
+    if (!fileList || !fileList.length) return;
     const fd = new FormData();
-    for (const f of fileInput.files) fd.append("files", f);
-    fd.append("overwrite", document.getElementById("overwrite-check").checked ? "true" : "false");
+    for (const f of fileList) fd.append("files", f);
+    fd.append("session_id", sessionId);
     fd.append("category", categoryInput.value.trim());
 
+    uploadStatus.className = "";
+    uploadStatus.textContent = "上傳中...";
     try {
       const r = await fetch("/upload", { method: "POST", body: fd });
       const j = await r.json();
-      const parts = [];
-      if (j.uploaded.length)    parts.push(`已上傳：${j.uploaded.join(", ")}`);
-      if (j.reindexing.length)  parts.push(`重建索引中：${j.reindexing.join(", ")}`);
-      if (j.skipped.length)     parts.push(`已存在（略過）：${j.skipped.join(", ")}`);
-      if (j.rejected.length)    parts.push(`拒絕：${j.rejected.join(", ")}`);
-      const pending = [...j.uploaded, ...j.reindexing].map(f => f.replace(/\.[^.]+$/, ""));
-      uploadStatus.className = (j.uploaded.length || j.reindexing.length) ? "ok" : "err";
-      uploadStatus.textContent = parts.join("　");
-      fileInput.value = "";
-
-      if (pending.length) {
-        uploadStatus.textContent += "　（索引建立中…）";
-        const done = new Set();
-        const timer = setInterval(async () => {
-          for (const src of pending) {
-            if (done.has(src)) continue;
-            const res = await fetch(`/ingest-status?source=${encodeURIComponent(src)}`);
-            const s = await res.json();
-            if (s.done) done.add(src);
-          }
-          if (done.size === pending.length) {
-            clearInterval(timer);
-            uploadStatus.textContent = uploadStatus.textContent.replace("（索引建立中…）", "✅ 索引完成");
-          }
-        }, 10000);
+      renderChips(j.pending);
+      if (j.rejected.length) {
+        uploadStatus.className = "err";
+        uploadStatus.textContent = "拒絕：" + j.rejected.join("、");
+      } else {
+        uploadStatus.textContent = j.staged.length ? `已加入暫存：${j.staged.join("、")}` : "";
       }
     } catch {
       uploadStatus.className = "err";
       uploadStatus.textContent = "上傳失敗";
     }
-    uploadBtn.disabled = false;
+  }
+
+  const fileInputHidden = document.getElementById("file-input-hidden");
+  function openFilePicker() { fileInputHidden.click(); }
+  document.getElementById("attach-btn").addEventListener("click", openFilePicker);
+  document.getElementById("upload-toggle").addEventListener("click", openFilePicker);
+  fileInputHidden.addEventListener("change", () => {
+    uploadFiles(fileInputHidden.files);
+    fileInputHidden.value = "";
   });
 
-  // indexed docs panel
-  const docsPanel  = document.getElementById("docs-panel");
-  const docsList   = document.getElementById("docs-list");
+  // 全頁拖放：用 counter 處理巢狀元素觸發的 dragenter/dragleave
+  const dropOverlay = document.getElementById("drop-overlay");
+  let dragCounter = 0;
+  document.body.addEventListener("dragenter", e => {
+    e.preventDefault();
+    dragCounter++;
+    dropOverlay.classList.add("show");
+  });
+  document.body.addEventListener("dragleave", e => {
+    e.preventDefault();
+    dragCounter = Math.max(0, dragCounter - 1);
+    if (dragCounter === 0) dropOverlay.classList.remove("show");
+  });
+  document.body.addEventListener("dragover", e => e.preventDefault());
+  document.body.addEventListener("drop", e => {
+    e.preventDefault();
+    dragCounter = 0;
+    dropOverlay.classList.remove("show");
+    uploadFiles(e.dataTransfer.files);
+  });
+
+  // 分類 datalist：頁面載入時直接抓一次（不再綁在上傳面板 toggle 上）
+  (async () => {
+    const r = await fetch("/categories");
+    const j = await r.json();
+    categoryList.innerHTML = j.categories.map(c => `<option value="${escapeHtml(c)}">`).join("");
+  })();
+
+  // 已索引文件面板
+  const docsPanel = document.getElementById("docs-panel");
+  const docsList = document.getElementById("docs-list");
   document.getElementById("docs-toggle").addEventListener("click", async () => {
     docsList.textContent = "載入中…";
     docsPanel.style.display = "flex";
@@ -365,10 +513,10 @@
     const j = await r.json();
     if (!j.docs.length) { docsList.textContent = "尚無已索引文件。"; return; }
     docsList.innerHTML = j.docs.map(d =>
-      `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f3f4f6;gap:8px">
-         <span style="flex:1">${d.source}</span>
-         <span style="color:#1a56db;font-size:0.8rem">${d.category}</span>
-         <span style="color:#6b7280;white-space:nowrap">${d.chunks} chunks</span>
+      `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08);gap:8px">
+         <span style="flex:1">${escapeHtml(d.source)}</span>
+         <span style="color:var(--accent);font-size:0.8rem">${escapeHtml(d.category)}</span>
+         <span style="color:var(--text-dim);white-space:nowrap">${d.chunks} chunks</span>
        </div>`
     ).join("");
   });

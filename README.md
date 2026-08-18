@@ -1,4 +1,4 @@
-# CiteFund — 台灣金融法規 Q&A Agent
+# DocOrganize — 台灣金融法規問答與文件整理 Agent
 
 針對證券投資信託及顧問相關法規的智能問答系統，支援對話記憶、串流輸出與動態 LLM 切換。
 
@@ -52,7 +52,7 @@ retriever.py（search_fusion）
 ## 專案結構
 
 ```
-CiteFund/
+DocOrganize/
 ├── app/
 │   ├── main.py        # FastAPI 入口
 │   ├── ingest.py      # 文件切塊、embedding、寫入 ES
