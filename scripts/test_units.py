@@ -12,6 +12,7 @@ from app.ingest import chunk_by_article, chunk_generic
 from app.retriever import _rrf_merge
 from app.main import _safe_filename, _valid_content
 from app.judge import _pick_judge_client
+from app.tools import run_tool
 
 # chunk_by_article：按「第N條」regex 切塊
 chunks = chunk_by_article("第1條 內容一\n第2-1條 內容二", "test")
@@ -37,6 +38,11 @@ assert _valid_content("a.pdf", b"%PDF-1.4 rest") is True
 assert _valid_content("a.pdf", b"not a pdf") is False
 assert _valid_content("a.txt", b"hello") is True
 assert _valid_content("a.exe", b"MZ...") is False
+
+# run_tool：查無此工具名稱時回傳錯誤訊息，不拋例外，也不算檢索內容
+result, contributes = run_tool("no_such_tool", {}, "s1", "hi", "model-a")
+assert contributes is False
+assert "找不到工具" in result
 
 # chunk_generic：固定長度滑動視窗切塊（compare_documents 的大文件降級依賴它）
 chunks = chunk_generic("A" * 1500, "test", size=600, overlap=100)

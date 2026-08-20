@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import httpx
 from openai import RateLimitError
 import app.agent as agent
+import app.tools as tools
 from app.agent import run_chat_thread
+from app.pending_files import PendingFile
 
 
 class ImmediateLoop:
@@ -118,10 +120,11 @@ assert len(thread_exc) == 1
 assert isinstance(thread_exc[0], RateLimitError)
 
 # 情境 5：_run_ingest 核准路徑 —— 真的寫入且 pending 被清除
+# _run_ingest 移到 app/tools.py 後（見架構審查候選 #1 的工具註冊表重構），要патch的 module 也跟著換成 tools
 ingest_calls, remove_calls = [], []
 restore = _patch(
-    agent,
-    get_pending=lambda session_id: [{"filename": "a.pdf", "path": "/tmp/a.pdf", "size": 10, "category": ""}],
+    tools,
+    get_pending=lambda session_id: [PendingFile("a.pdf", "/tmp/a.pdf", 10, "")],
     evaluate_action=lambda user_message, proposed_action, exclude_model=None: {"approved": True, "reason": "同意"},
     delete_source=lambda source: 0,
     ingest_file=lambda path, category="": ingest_calls.append((path, category)) or 3,
@@ -130,7 +133,7 @@ restore = _patch(
     remove_pending=lambda session_id, filenames: remove_calls.append(filenames),
 )
 try:
-    result = agent._run_ingest({"filenames": ["a.pdf"]}, "s1", "存到知識庫", "model-a")
+    result = tools._run_ingest({"filenames": ["a.pdf"]}, "s1", "存到知識庫", "model-a")
     assert result == {"executed": True, "reason": "同意", "ingested": ["a.pdf"], "chunks": 3}
     assert len(ingest_calls) == 1
     assert remove_calls == [["a.pdf"]]
@@ -140,14 +143,14 @@ finally:
 # 情境 6：_run_ingest 拒絕路徑 —— ingest_file 完全沒被呼叫、pending 不變
 ingest_calls, remove_calls = [], []
 restore = _patch(
-    agent,
-    get_pending=lambda session_id: [{"filename": "a.pdf", "path": "/tmp/a.pdf", "size": 10, "category": ""}],
+    tools,
+    get_pending=lambda session_id: [PendingFile("a.pdf", "/tmp/a.pdf", 10, "")],
     evaluate_action=lambda user_message, proposed_action, exclude_model=None: {"approved": False, "reason": "意圖不明確"},
     ingest_file=lambda path, category="": ingest_calls.append((path, category)) or 3,
     remove_pending=lambda session_id, filenames: remove_calls.append(filenames),
 )
 try:
-    result = agent._run_ingest({"filenames": ["a.pdf"]}, "s1", "這份文件", "model-a")
+    result = tools._run_ingest({"filenames": ["a.pdf"]}, "s1", "這份文件", "model-a")
     assert result == {"executed": False, "reason": "意圖不明確"}
     assert ingest_calls == []
     assert remove_calls == []
@@ -155,10 +158,14 @@ finally:
     restore()
 
 # 情境 7：Answer Gate 不合格 —— 觸發一次修正，且只觸發一次
+# search_fusion 被 _run_search 使用、現在也在 tools.py 裡；evaluate_answer 仍是 agent.py 直接呼叫，patch 留在 agent
 gate_calls = []
+restore_tools = _patch(
+    tools,
+    search_fusion=lambda query, top_k=5, source=None, category=None: [{"article": "第1條", "content": "測試條文"}],
+)
 restore = _patch(
     agent,
-    search_fusion=lambda query, top_k=5, source=None: [{"article": "第1條", "content": "測試條文"}],
     evaluate_answer=lambda question, context, answer, primary_model, clients=None: (
         gate_calls.append(1)
         or {"passed": False, "faithfulness": False, "relevance": True, "reason": "答案跟參考內容對不上"}
@@ -181,12 +188,16 @@ try:
     assert "修正後答案" in full
 finally:
     restore()
+    restore_tools()
 
 # 情境 8：Answer Gate 通過 —— 不出現修正段落
 gate_calls = []
+restore_tools = _patch(
+    tools,
+    search_fusion=lambda query, top_k=5, source=None, category=None: [{"article": "第1條", "content": "測試條文"}],
+)
 restore = _patch(
     agent,
-    search_fusion=lambda query, top_k=5, source=None: [{"article": "第1條", "content": "測試條文"}],
     evaluate_answer=lambda question, context, answer, primary_model, clients=None: (
         gate_calls.append(1)
         or {"passed": True, "faithfulness": True, "relevance": True, "reason": "ok"}
@@ -207,5 +218,18 @@ try:
     assert "系統自動覆核後修正" not in full
 finally:
     restore()
+    restore_tools()
+
+# 情境 9：模型呼叫不存在的工具名稱 —— 回傳錯誤訊息當工具結果，不中斷整輪對話
+client = _sequenced_client(
+    [
+        [_tool_call_chunk("no_such_tool", json_mod.dumps({})), _chunk(finish_reason="tool_calls")],
+        [_chunk(content="收到"), _chunk(finish_reason="stop")],
+    ]
+)
+tokens, thread_exc = _run([(client, "model-a")])
+assert thread_exc == []
+full = "".join(t for t in tokens if t)
+assert full == "收到"
 
 print("all agent checks passed")

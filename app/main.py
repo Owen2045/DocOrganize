@@ -125,9 +125,9 @@ def pending(session_id: str):
 
 @app.delete("/pending")
 def delete_pending(session_id: str, filename: str):
-    match = next((p for p in get_pending(session_id) if p["filename"] == filename), None)
+    match = next((p for p in get_pending(session_id) if p.filename == filename), None)
     if match:
-        Path(match["path"]).unlink(missing_ok=True)
+        Path(match.path).unlink(missing_ok=True)
         remove_pending(session_id, [filename])
     return {"pending": get_pending(session_id)}
 
