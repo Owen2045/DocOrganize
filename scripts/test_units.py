@@ -13,6 +13,7 @@ from app.retriever import _rrf_merge
 from app.main import _safe_filename, _valid_content
 from app.judge import _pick_judge_client
 from app.tools import run_tool
+from app.pending_files import PendingFile, _apply_category
 
 # chunk_by_article：按「第N條」regex 切塊
 chunks = chunk_by_article("第1條 內容一\n第2-1條 內容二", "test")
@@ -44,11 +45,28 @@ result, contributes = run_tool("no_such_tool", {}, "s1", "hi", "model-a")
 assert contributes is False
 assert "找不到工具" in result
 
-# chunk_generic：固定長度滑動視窗切塊（compare_documents 的大文件降級依賴它）
+# _apply_category：只改指定 batch 的分類，其他 batch 的記錄不動
+pending = [
+    PendingFile("old.pdf", "/tmp/old.pdf", 10, "舊分類", "batch-old"),
+    PendingFile("new1.pdf", "/tmp/new1.pdf", 10, "", "batch-new"),
+    PendingFile("new2.pdf", "/tmp/new2.pdf", 10, "", "batch-new"),
+]
+updated = _apply_category(pending, "batch-new", "筆記")
+assert [p.category for p in updated] == ["舊分類", "筆記", "筆記"]
+assert [p.filename for p in updated] == ["old.pdf", "new1.pdf", "new2.pdf"]  # 順序不變
+
+# chunk_generic：優先照段落/句子邊界切（compare_documents 的大文件降級依賴它）
 chunks = chunk_generic("A" * 1500, "test", size=600, overlap=100)
 assert [c["article"] for c in chunks] == ["段落1", "段落2", "段落3"]
 assert all(c["source"] == "test" for c in chunks)
 assert chunk_generic("", "test") == []
+
+# chunk_generic：不切斷句子 —— 完全沒有標點可切的極端情況才會退回字數硬切；
+# 有標點時每個 chunk 都應該落在句尾（。！？），不會切在句子中間
+text = "這是第一段的第一句話。這是第一段的第二句話。\n\n這是第二段的第一句話！這是第二段的第二句話？"
+chunks = chunk_generic(text, "test", size=15, overlap=3)
+assert len(chunks) > 1  # 確認真的有觸發多塊切分，不是這個 size 剛好裝得下全部
+assert all(c["content"][-1] in "。！？" for c in chunks)
 
 # _pick_judge_client：三種選擇情境
 # 1. 雙 provider，排除 primary，應選另一個且非同模型自我檢查

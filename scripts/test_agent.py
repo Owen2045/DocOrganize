@@ -6,6 +6,7 @@ clients 全部注入假物件，不連真的 OpenAI/Gemini。
 import sys
 import json as json_mod
 import queue as queue_mod
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,12 +120,14 @@ assert tokens == [None]
 assert len(thread_exc) == 1
 assert isinstance(thread_exc[0], RateLimitError)
 
-# 情境 5：_run_ingest 核准路徑 —— 真的寫入且 pending 被清除
-# _run_ingest 移到 app/tools.py 後（見架構審查候選 #1 的工具註冊表重構），要патch的 module 也跟著換成 tools
+# 情境 5：_run_ingest 核准路徑 —— 真的寫入、pending 被清除、磁碟上的原始檔也被刪除
+# _run_ingest 移到 app/tools.py 後（見架構審查候選 #1 的工具註冊表重構），要 patch 的 module 也跟著換成 tools
+tmp_path = Path(tempfile.gettempdir()) / "docorganize_test_ingest.pdf"
+tmp_path.write_bytes(b"test")
 ingest_calls, remove_calls = [], []
 restore = _patch(
     tools,
-    get_pending=lambda session_id: [PendingFile("a.pdf", "/tmp/a.pdf", 10, "")],
+    get_pending=lambda session_id: [PendingFile("a.pdf", str(tmp_path), 10, "")],
     evaluate_action=lambda user_message, proposed_action, exclude_model=None: {"approved": True, "reason": "同意"},
     delete_source=lambda source: 0,
     ingest_file=lambda path, category="": ingest_calls.append((path, category)) or 3,
@@ -137,14 +140,17 @@ try:
     assert result == {"executed": True, "reason": "同意", "ingested": ["a.pdf"], "chunks": 3}
     assert len(ingest_calls) == 1
     assert remove_calls == [["a.pdf"]]
+    assert not tmp_path.exists()  # 歸檔成功後，Mac 磁碟上的原始檔應該被刪除
 finally:
     restore()
 
-# 情境 6：_run_ingest 拒絕路徑 —— ingest_file 完全沒被呼叫、pending 不變
+# 情境 6：_run_ingest 拒絕路徑 —— ingest_file 完全沒被呼叫、pending 不變、磁碟檔案不受影響
+tmp_path = Path(tempfile.gettempdir()) / "docorganize_test_reject.pdf"
+tmp_path.write_bytes(b"test")
 ingest_calls, remove_calls = [], []
 restore = _patch(
     tools,
-    get_pending=lambda session_id: [PendingFile("a.pdf", "/tmp/a.pdf", 10, "")],
+    get_pending=lambda session_id: [PendingFile("a.pdf", str(tmp_path), 10, "")],
     evaluate_action=lambda user_message, proposed_action, exclude_model=None: {"approved": False, "reason": "意圖不明確"},
     ingest_file=lambda path, category="": ingest_calls.append((path, category)) or 3,
     remove_pending=lambda session_id, filenames: remove_calls.append(filenames),
@@ -154,8 +160,10 @@ try:
     assert result == {"executed": False, "reason": "意圖不明確"}
     assert ingest_calls == []
     assert remove_calls == []
+    assert tmp_path.exists()  # 沒通過審核，磁碟檔案不該被動到
 finally:
     restore()
+    tmp_path.unlink(missing_ok=True)
 
 # 情境 7：Answer Gate 不合格 —— 觸發一次修正，且只觸發一次
 # search_fusion 被 _run_search 使用、現在也在 tools.py 裡；evaluate_answer 仍是 agent.py 直接呼叫，patch 留在 agent
@@ -231,5 +239,37 @@ tokens, thread_exc = _run([(client, "model-a")])
 assert thread_exc == []
 full = "".join(t for t in tokens if t)
 assert full == "收到"
+
+# 情境 10：filenames 留空時只歸檔「最新一批」上傳的檔案，不動更早留在 pending 裡還沒處理的舊批次
+old_tmp = Path(tempfile.gettempdir()) / "docorganize_test_batch_old.pdf"
+new_tmp1 = Path(tempfile.gettempdir()) / "docorganize_test_batch_new1.pdf"
+new_tmp2 = Path(tempfile.gettempdir()) / "docorganize_test_batch_new2.pdf"
+for p in (old_tmp, new_tmp1, new_tmp2):
+    p.write_bytes(b"test")
+ingest_calls, remove_calls = [], []
+restore = _patch(
+    tools,
+    get_pending=lambda session_id: [
+        PendingFile("old.pdf", str(old_tmp), 10, "", "batch-old"),
+        PendingFile("new1.pdf", str(new_tmp1), 10, "", "batch-new"),
+        PendingFile("new2.pdf", str(new_tmp2), 10, "", "batch-new"),
+    ],
+    evaluate_action=lambda user_message, proposed_action, exclude_model=None: {"approved": True, "reason": "同意"},
+    delete_source=lambda source: 0,
+    ingest_file=lambda path, category="": ingest_calls.append((path, category)) or 1,
+    mark_ingesting=lambda source: None,
+    mark_done=lambda source: None,
+    remove_pending=lambda session_id, filenames: remove_calls.append(filenames),
+)
+try:
+    result = tools._run_ingest({}, "s1", "存起來", "model-a")
+    assert result["ingested"] == ["new1.pdf", "new2.pdf"]
+    assert remove_calls == [["new1.pdf", "new2.pdf"]]
+    assert len(ingest_calls) == 2
+    assert not new_tmp1.exists() and not new_tmp2.exists()  # 最新批次的檔案被歸檔並清掉
+    assert old_tmp.exists()  # 舊批次完全沒被動到
+finally:
+    restore()
+    old_tmp.unlink(missing_ok=True)
 
 print("all agent checks passed")

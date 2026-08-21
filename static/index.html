@@ -204,7 +204,7 @@
 
   #send:disabled { background: #4b5563; cursor: not-allowed; }
 
-  #upload-toggle, #docs-toggle {
+  #docs-toggle {
     background: rgba(255,255,255,0.08);
     border: 1px solid var(--glass-border);
     color: var(--text);
@@ -213,7 +213,7 @@
     font-size: 0.85rem;
     cursor: pointer;
   }
-  #upload-toggle:hover, #docs-toggle:hover { background: rgba(255,255,255,0.15); }
+  #docs-toggle:hover { background: rgba(255,255,255,0.15); }
 
   #upload-status {
     font-size: 0.78rem;
@@ -286,7 +286,6 @@
   <h1>文件助理</h1>
   <div style="display:flex;gap:12px;align-items:center">
     <span id="session-badge"></span>
-    <button id="upload-toggle">上傳文件</button>
     <button id="docs-toggle">已索引文件</button>
   </div>
 </header>
@@ -302,7 +301,7 @@
 <div id="drop-overlay"><div>放開以上傳文件</div></div>
 
 <div id="chat">
-  <div class="msg assistant">您好！我是文件助理，可以回答證券投資信託相關法規問題。也可以拖曳文件到畫面上傳，再告訴我要歸檔還是比較。</div>
+  <div class="msg assistant">您好！我是文件助理，能查詢或歸檔文件。拖曳上傳後，直接說您想做什麼就好。</div>
 </div>
 
 <div id="chips"></div>
@@ -329,6 +328,7 @@
   const uploadStatus = document.getElementById("upload-status");
   const categoryInput = document.getElementById("category-input");
   const categoryList = document.getElementById("category-list");
+  let lastBatchId = null; // 最近一次上傳的 batch_id，讓分類框事後輸入也能補寫回該批次
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({
@@ -363,6 +363,8 @@
     input.value = "";
     input.style.height = "auto";
     sendBtn.disabled = true;
+    uploadStatus.textContent = "";
+    categoryInput.value = "";
 
     addMsg("user", text);
     const bubble = addMsg("assistant");
@@ -454,6 +456,7 @@
       const r = await fetch("/upload", { method: "POST", body: fd });
       const j = await r.json();
       renderChips(j.pending);
+      if (j.pending.length) lastBatchId = j.pending[j.pending.length - 1].batch_id;
       if (j.rejected.length) {
         uploadStatus.className = "err";
         uploadStatus.textContent = "拒絕：" + j.rejected.join("、");
@@ -469,10 +472,22 @@
   const fileInputHidden = document.getElementById("file-input-hidden");
   function openFilePicker() { fileInputHidden.click(); }
   document.getElementById("attach-btn").addEventListener("click", openFilePicker);
-  document.getElementById("upload-toggle").addEventListener("click", openFilePicker);
   fileInputHidden.addEventListener("change", () => {
     uploadFiles(fileInputHidden.files);
     fileInputHidden.value = "";
+  });
+
+  // 使用者先拖放上傳、才回頭在分類框輸入時，把分類補寫回最近一次上傳的那批檔案
+  categoryInput.addEventListener("change", async () => {
+    if (!lastBatchId) return;
+    const params = new URLSearchParams({
+      session_id: sessionId,
+      batch_id: lastBatchId,
+      category: categoryInput.value.trim(),
+    });
+    const r = await fetch(`/pending/category?${params}`, { method: "PUT" });
+    const j = await r.json();
+    renderChips(j.pending);
   });
 
   // 全頁拖放：用 counter 處理巢狀元素觸發的 dragenter/dragleave

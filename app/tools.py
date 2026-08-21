@@ -60,7 +60,7 @@ _INGEST_TOOL = {
                 "filenames": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "要歸檔的暫存檔名清單；留空表示歸檔該 session 目前所有暫存的檔案。",
+                    "description": "要歸檔的暫存檔名清單；留空表示歸檔使用者最新一次上傳批次的所有檔案（不含更早之前還沒處理的舊檔案）。",
                 },
                 "category": {"type": "string", "description": "選填，這批文件的分類"},
             },
@@ -144,7 +144,13 @@ def _run_compare(args: dict, session_id: str) -> str:
 def _run_ingest(args: dict, session_id: str, user_message: str, model: str) -> dict:
     """將暫存檔案寫入知識庫，回傳執行結果。"""
     pending = get_pending(session_id)
-    requested = args.get("filenames") or [p.filename for p in pending]
+    if args.get("filenames"):
+        requested = args["filenames"]
+    else:
+        # 沒指名時只歸檔「最新一批」上傳的檔案（pending 是依上傳順序 append 的，
+        # 最後一筆的 batch_id 就是最新批次），避免誤觸更早留在 pending 裡還沒處理的舊檔案
+        latest_batch = pending[-1].batch_id if pending else None
+        requested = [p.filename for p in pending if p.batch_id == latest_batch]
     matched = [p for p in pending if p.filename in requested]
     if not matched:
         return {"executed": False, "reason": "找不到符合的暫存檔案，請確認檔名或重新上傳。"}
@@ -168,6 +174,7 @@ def _run_ingest(args: dict, session_id: str, user_message: str, model: str) -> d
             delete_source(path.stem)  # 同名已索引則先刪除，等於 upsert；不存在時為 no-op
             total_chunks += ingest_file(path, category or p.category)
             ingested.append(p.filename)
+            path.unlink(missing_ok=True)  # 內容已寫入 ES，Mac 磁碟上的原始檔不再需要
         finally:
             mark_done(path.stem)
     remove_pending(session_id, ingested)

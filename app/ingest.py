@@ -9,6 +9,9 @@ from app.retriever import get_embed_model
 # 比對「第 N 條」或「第 N-M 條」格式，用於切塊分隔符
 ARTICLE_PATTERN = re.compile(r"(第\s*\d+(?:-\d+)?\s*條)")
 
+# chunk_generic 的句子邊界：切在標點/換行「之後」，讓標點留在前一句尾端
+_SENTENCE_END = re.compile(r"(?<=[。！？\n])")
+
 # ES index mapping：text 欄位走 BM25，embedding 走 kNN cosine，category 必須是 keyword 才能做 terms aggregation
 INDEX_MAPPING = {
     "mappings": {
@@ -55,15 +58,45 @@ def chunk_by_article(text: str, source: str) -> list[dict]:
     return chunks
 
 
+def _break_into_units(text: str, size: int) -> list[str]:
+    """把文字切成不超過 size 的最小語意單元：優先照段落切，太長的段落改照句子切，
+    連句子都超過 size（例如整段沒有標點的流水帳文字）才退回固定字數硬切。"""
+    units = []
+    for para in text.split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        if len(para) <= size:
+            units.append(para)
+            continue
+        for sent in _SENTENCE_END.split(para):
+            sent = sent.strip()
+            if not sent:
+                continue
+            if len(sent) <= size:
+                units.append(sent)
+            else:
+                units.extend(sent[i : i + size] for i in range(0, len(sent), size))
+    return units
+
+
 def chunk_generic(text: str, source: str, size: int = 600, overlap: int = 100) -> list[dict]:
-    """無條文結構的文件（如比較用的一般 PDF）：固定長度滑動視窗切塊，標記段落序號。"""
-    chunks = []
-    step = size - overlap
-    for idx, i in enumerate(range(0, len(text), step)):
-        content = text[i : i + size].strip()
-        if content:
-            chunks.append({"article": f"段落{idx + 1}", "content": content, "source": source})
-    return chunks
+    """無條文結構的文件（如比較用的一般 PDF）：優先照段落/句子邊界切，不切斷語意單元；
+    把小單元貪心地塞進接近 size 的 chunk，塊與塊之間保留 overlap 字元維持前後文連貫。"""
+    chunks, buf = [], ""
+    for unit in _break_into_units(text, size):
+        if buf and len(buf) + len(unit) > size:
+            chunks.append(buf)
+            buf = (buf[-overlap:] if overlap else "") + unit
+        else:
+            buf += unit
+    if buf:
+        chunks.append(buf)
+    return [
+        {"article": f"段落{idx + 1}", "content": c.strip(), "source": source}
+        for idx, c in enumerate(chunks)
+        if c.strip()
+    ]
 
 
 def list_indexed_docs() -> list[dict]:

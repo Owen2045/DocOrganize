@@ -6,12 +6,13 @@ from sse_starlette.sse import EventSourceResponse
 from app.memory import get_history, append_turn
 from app.retriever import get_embed_model
 from app.ingest import list_indexed_docs, list_categories, is_ingesting, sweep_orphaned_docs
-from app.pending_files import get_pending, add_pending, remove_pending
+from app.pending_files import get_pending, add_pending, remove_pending, update_category
 from app.agent import build_messages, run_chat_thread
 from app.config import DOCS_DIR
 from pathlib import Path
 import asyncio
 import json
+import uuid
 
 DOCS_DIR.mkdir(exist_ok=True)
 
@@ -100,7 +101,11 @@ async def upload(
     category: str = Form(""),
 ):
     """只暫存檔案，不自動 ingest。是否寫入知識庫、要不要覆蓋同名文件，
-    完全交給聊天流程裡的 ingest_documents + Action Gate 判斷。"""
+    完全交給聊天流程裡的 ingest_documents + Action Gate 判斷。
+
+    同一次請求裡的檔案共用一個 batch_id，讓使用者事後說「存起來」不用點名檔名時，
+    ingest_documents 能只處理「這一批」，不會誤觸之前留在 pending 裡還沒處理的舊檔案。"""
+    batch_id = uuid.uuid4().hex[:8]
     staged, rejected = [], []
     for f in files:
         filename = _safe_filename(f.filename)
@@ -113,7 +118,7 @@ async def upload(
             continue
         dest = DOCS_DIR / filename
         dest.write_bytes(data)
-        add_pending(session_id, filename, str(dest), len(data), category)
+        add_pending(session_id, filename, str(dest), len(data), category, batch_id)
         staged.append(filename)
     return {"staged": staged, "rejected": rejected, "pending": get_pending(session_id)}
 
@@ -129,6 +134,13 @@ def delete_pending(session_id: str, filename: str):
     if match:
         Path(match.path).unlink(missing_ok=True)
         remove_pending(session_id, [filename])
+    return {"pending": get_pending(session_id)}
+
+
+@app.put("/pending/category")
+def set_pending_category(session_id: str, batch_id: str, category: str):
+    """補改某批次的分類；給使用者先拖放上傳、之後才在分類框輸入的情況用。"""
+    update_category(session_id, batch_id, category)
     return {"pending": get_pending(session_id)}
 
 
