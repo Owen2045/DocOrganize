@@ -26,7 +26,9 @@ def _extract_json(text: str) -> dict:
 
 
 def evaluate_action(user_message: str, proposed_action: dict, clients=None, exclude_model=None) -> dict:
-    """Action Gate：寫入操作執行前的意圖審核，fail-closed（判斷失敗一律拒絕）。
+    """Action Gate：寫入操作執行前的意圖審核，fail-closed——只有審核流程本身出錯（API 失敗、
+    回傳格式解析不出來）才會直接拒絕；審核正常跑完但判定意圖不成立，同樣是拒絕，兩者結果一樣，
+    但語意不同：前者是「不知道能不能做，保守起見不做」，後者是「知道不該做」。
 
     只餵「使用者訊息＋結構化 proposed_action」，不餵檔案原文，縮小 prompt injection 攻擊面。
     """
@@ -50,7 +52,9 @@ def evaluate_action(user_message: str, proposed_action: dict, clients=None, excl
 
 
 def evaluate_answer(question: str, context: str, answer: str, primary_model: str, clients=None) -> dict:
-    """Answer Gate：法規 QA 答案的品質覆核，fail-open（判斷失敗直接放行，不影響既有答案品質）。"""
+    """Answer Gate：法規 QA 答案的品質覆核，fail-open——只有審核流程本身出錯（API 失敗、回傳格式
+    解析不出來）才會直接放行，維持原答案不變；審核正常跑完但判定不合格，仍會被攔下來要求修正，
+    不算放行。"""
     client, model, same_provider = _pick_judge_client(clients, exclude_model=primary_model)
     prefix = "[同模型自我檢查] " if same_provider else ""
     prompt = (

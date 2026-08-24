@@ -29,52 +29,11 @@
 | 前端 | 純 HTML/CSS/JS + marked.js |
 | 部署 | Docker Compose |
 
-## 系統架構
-
-```
-瀏覽器
-  │  POST /chat/stream（SSE）／拖曳上傳文件
-  ▼
-FastAPI
-  ├── Redis — 對話歷史、暫存文件清單
-  └── OpenAI Function Calling（多輪，stream=True）
-        每輪：LLM 判斷要查詢知識庫、列出文件、歸檔、還是比較
-        寫入類操作執行前／回答生成後，交由獨立 LLM 覆核
-        最終回答 → SSE token by token
-
-retriever.py（search_fusion）
-  ├── LLM 改寫多個角度的 query → 批次 embed
-  ├── 各 query：BM25（原始文字）+ kNN（embed，可依分類/文件縮小範圍）→ RRF
-  └── 多路結果再次 RRF merge → top K chunks
-```
-
-## 專案結構
-
-```
-DocOrganize/
-├── app/
-│   ├── main.py          # FastAPI 入口
-│   ├── agent.py          # Agent 對話迴圈、streaming
-│   ├── tools.py           # 工具定義與分派
-│   ├── judge.py           # 覆核邏輯
-│   ├── ingest.py          # 文件切塊、embedding、寫入 ES
-│   ├── retriever.py       # 混合檢索（BM25+kNN+RRF）
-│   ├── pending_files.py   # 暫存文件管理
-│   ├── memory.py          # Redis 對話記憶
-│   └── config.py          # 環境變數
-├── static/
-│   └── index.html         # 聊天 UI
-├── scripts/
-│   └── ingest.py          # CLI 批次 ingest
-├── docker-compose.yml
-├── Dockerfile
-└── requirements.txt
-```
 
 ## 設計決策
 
 - **原生 Function Calling 取代框架**：直接使用 OpenAI SDK 的 tool use 流程，保留對 streaming、tool 執行順序的完整控制
-- **Agent 自主判斷，而非固定流程**：使用者不用手動選功能，Agent 依對話內容自己決定要查詢、歸檔還是比較
+- **Agent 自主判斷，而非固定流程**：使用者不用手動選功能，Agent 依對話內容自己決定要查詢、歸檔
 - **雙層 LLM 審核**：寫入類操作與回答品質皆由另一顆 LLM 獨立覆核，避免單一模型的盲點
 - **Multi-Query RAG-Fusion**：GPT 將問題改寫為多個不同角度，批次 embed 後各自 BM25+kNN，再做第二層 RRF；有效覆蓋使用者口語問法與專業術語之間的差距
 - **HyDE**：kNN 用假設條文 embed，BM25 仍用原始 query，兩者 RRF 合併，兼顧召回率與精準度
