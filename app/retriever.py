@@ -18,14 +18,14 @@ def _get_oai() -> _OAI:
 
 
 def _hyde_query(query: str) -> str:
-    """HyDE：讓 LLM 生成一段假設性條文，用其 embedding 代替原始 query 做 kNN，提升語意匹配精度。"""
+    """HyDE：讓 LLM 生成一段假設性文件內容，用其 embedding 代替原始 query 做 kNN，提升語意匹配精度。"""
     try:
         r = _get_oai().chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "user",
-                    "content": f"請用台灣金融法規的條文語氣，寫一段回答以下問題的法規內容（50字內），不需要條號：{query}",
+                    "content": f"請寫一段回答以下問題的假設性文件內容（50字內），語氣配合問題本身的性質：{query}",
                 }
             ],
             max_tokens=200,
@@ -59,7 +59,7 @@ def _rewrite_queries(query: str) -> list[str]:
         r = _get_oai().chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content":
-                f"請將以下問題改寫成 3 個不同角度的查詢字串，用於搜尋台灣金融法規知識庫。"
+                f"請將以下問題改寫成 3 個不同角度的查詢字串，用於搜尋文件知識庫。"
                 f"每行一個，不要編號，不要額外說明：\n{query}"}],
             max_tokens=200,
         )
@@ -73,8 +73,8 @@ def _rewrite_queries(query: str) -> list[str]:
 def search_fusion(
     query: str, top_k: int = 5, source: str | None = None, category: str | None = None
 ) -> list[dict]:
-    """Multi-Query RAG-Fusion + HyDE：GPT 改寫 3 個 query，各自生成假設條文，
-    批次 embed 假設條文做 kNN、原始改寫 query 做 BM25，各自 RRF 後再做一次跨 query RRF，回傳 top_k。
+    """Multi-Query RAG-Fusion + HyDE：GPT 改寫 3 個 query，各自生成假設文件，
+    批次 embed 假設文件做 kNN、原始改寫 query 做 BM25，各自 RRF 後再做一次跨 query RRF，回傳 top_k。
 
     source 給定時只搜尋該份文件（比較兩份文件時用來分別鎖定各自範圍）；
     category 給定時只搜尋該分類（知識庫存有多種文件類型時用來縮小範圍）；兩者可併用。"""
@@ -83,9 +83,9 @@ def search_fusion(
     t0 = time.time()
     rewrites = _rewrite_queries(query)
     print(f"[retriever] rewrites: {rewrites}", flush=True)
-    # HyDE：每個改寫 query 各生成一段假設條文，用其 embedding 代替原始 query 做 kNN
+    # HyDE：每個改寫 query 各生成一段假設文件，用其 embedding 代替原始 query 做 kNN
     hydes = [_hyde_query(r) for r in rewrites]
-    # 批次 encode 所有假設條文，比逐一呼叫快約 2-3 倍
+    # 批次 encode 所有假設文件，比逐一呼叫快約 2-3 倍
     vectors = get_embed_model().encode(hydes)
     print(f"[retriever] rewrite+hyde+embed: {time.time()-t0:.2f}s", flush=True)
 
